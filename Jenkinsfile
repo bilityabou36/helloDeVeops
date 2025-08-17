@@ -41,7 +41,7 @@ pipeline {
               pip install --no-cache-dir -r requirements.txt
               # if you want strict linting, remove "|| true"
               pip install --no-cache-dir flake8 pytest
-              flake8 . || true
+              flake8 app.py || true
               pytest -q
             '
         '''
