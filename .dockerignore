@@ -7,4 +7,11 @@ __pycache__/
 .git
 .gitignore
 .DS_Store
-  
+*.bak
+
+# ignore local env & caches
+venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+.git/
