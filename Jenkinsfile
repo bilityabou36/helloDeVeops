@@ -1,97 +1,87 @@
 pipeline {
-  agent any
+    agent any
 
-  options {
-    timestamps()
-    disableConcurrentBuilds()
-  }
-
-  environment {
-    IMAGE_NAME = 'false-hello'
-    TRIVY_VER  = '0.50.0'
-  }
-
-  stages {
-    stage('Checkout') {
-      steps {
-        checkout scm
-      }
+    environment {
+        IMAGE_NAME = "falsk-hello"
     }
 
-    stage('List workspace') {
-      steps {
-        sh '''
-          echo "== Jenkins container workspace =="
-          pwd
-          ls -la
-          echo "== Should see requirements.txt and Dockerfile above =="
-        '''
-      }
-    }
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'main',
+                    url: 'https://github.com/bilityabou36/helloDeVeops.git'
+            }
+        }
 
-    stage('Lint & Tests (in Python container w/ jenkins_home volume)') {
-      steps {
-        sh '''
-          docker run --rm \
-            -v jenkins_home:/var/jenkins_home \
-            -w "$WORKSPACE" \
-            python:3.11-slim /bin/bash -lc '
-              set -euxo pipefail
-              echo "== Inside python container, listing JOB_DIR =="
-              pwd; ls -la
-              echo "== requirements.txt head =="
-              head -n 20 requirements.txt
-              python -m pip install --upgrade pip
-              pip install --no-cache-dir -r requirements.txt
-              # if you want strict linting, remove "|| true"
-              pip install --no-cache-dir flake8 pytest
-              flake8 app.py || true
-              PYTHONPATH=. pytest -q
-            '
-        '''
-      }
-    }
+        stage('Set up Python venv & Install deps') {
+            steps {
+                sh '''
+                    python3 -m venv venv
+                    . venv/bin/activate
+                    pip install --upgrade pip
+                    pip install -r requirements.txt
+                '''
+            }
+        }
 
-    stage('Build Docker Image (stream workspace tar to docker)') {
-      steps {
-        sh '''
-          echo "== Tar the workspace and stream as build context =="
-          # ensure a fresh build (no cached layers)
-          docker builder prune -af || true
-          tar -C "$WORKSPACE" -cf - . | \
-            docker build --no-cache -t ${IMAGE_NAME}:${BUILD_NUMBER} -f Dockerfile -
-        '''
-      }
-    }
+        stage('Lint') {
+            steps {
+                sh '''
+                    . venv/bin/activate
+                    flake8 --max-line-length=100
+                '''
+            }
+        }
 
-    stage('Trivy Scan (fail on HIGH/CRITICAL)') {
-      steps {
-        sh '''
-          docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            aquasec/trivy:${TRIVY_VER} image \
-              --no-progress \
-              --severity HIGH,CRITICAL \
-              --exit-code 1 \
-              ${IMAGE_NAME}:${BUILD_NUMBER}
-        '''
-      }
-    }
+        stage('Test') {
+            steps {
+                sh '''
+                    . venv/bin/activate
+                    pytest --maxfail=1 --disable-warnings -q
+                '''
+            }
+        }
 
-    stage('Login & Push to ECR') {
-      when { expression { return false } } // flip to true when you’re ready
-      steps {
-        echo 'Add your ECR login + push here when ready.'
-      }
-    }
-  }
+        stage('Docker Build') {
+            steps {
+                sh '''
+                    docker build -t ${IMAGE_NAME}:${BUILD_NUMBER} .
+                '''
+            }
+        }
 
-  post {
-    always {
-      sh 'docker image prune -f || true'
+        stage('Verify deps in image') {
+            steps {
+                sh '''
+                    echo "== Checking gunicorn version inside the container =="
+
+                    # Show gunicorn version inside the built container
+                    docker run --rm ${IMAGE_NAME}:${BUILD_NUMBER} \
+                      python -c "import importlib.metadata as m; print(m.version('gunicorn'))"
+
+                    # Fail if version < 23
+                    docker run --rm ${IMAGE_NAME}:${BUILD_NUMBER} \
+                      python - <<'PY'
+import sys
+from importlib.metadata import version
+v = tuple(map(int, version("gunicorn").split(".")))
+print("Detected gunicorn version:", v)
+sys.exit(0 if v >= (23,0,0) else 1)
+PY
+                '''
+            }
+        }
+
+        stage('Trivy Scan') {
+            steps {
+                sh '''
+                    trivy image --exit-code 1 --severity HIGH,CRITICAL ${IMAGE_NAME}:${BUILD_NUMBER}
+                '''
+            }
+        }
     }
-  }
 }
+
 
 
 
