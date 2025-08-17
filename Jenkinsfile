@@ -1,25 +1,29 @@
 pipeline {
   agent any
-  options { timestamps() }
+
+  options {
+    timestamps()
+    disableConcurrentBuilds()
+  }
 
   environment {
-    APP_NAME   = 'false-hello'
-    ECR_REPO   = 'false-hello'
-    AWS_REGION = 'us-east-1'
-    IMAGE_TAG  = "${env.BUILD_NUMBER}"
-    // Jenkins job/workspace names
-    JENKINS_VOL = 'jenkins_home'                   // <— the Docker volume you created
-    JOB_DIR     = "/var/jenkins_home/workspace/${JOB_NAME}"
+    IMAGE_NAME = 'false-hello'
+    TRIVY_VER  = '0.50.0'
   }
 
   stages {
-    stage('Checkout') { steps { checkout scm } }
+    stage('Checkout') {
+      steps {
+        checkout scm
+      }
+    }
 
     stage('List workspace') {
       steps {
         sh '''
           echo "== Jenkins container workspace =="
-          pwd; ls -la
+          pwd
+          ls -la
           echo "== Should see requirements.txt and Dockerfile above =="
         '''
       }
@@ -29,8 +33,8 @@ pipeline {
       steps {
         sh '''
           docker run --rm \
-            -v ${JENKINS_VOL}:/var/jenkins_home \
-            -w "${JOB_DIR}" \
+            -v jenkins_home:/var/jenkins_home \
+            -w "$WORKSPACE" \
             python:3.11-slim /bin/bash -lc '
               set -euxo pipefail
               echo "== Inside python container, listing JOB_DIR =="
@@ -52,8 +56,10 @@ pipeline {
       steps {
         sh '''
           echo "== Tar the workspace and stream as build context =="
-          tar -C "${WORKSPACE}" -cf - . | \
-            docker build -t ${APP_NAME}:${IMAGE_TAG} -f Dockerfile -
+          # ensure a fresh build (no cached layers)
+          docker builder prune -af || true
+          tar -C "$WORKSPACE" -cf - . | \
+            docker build --no-cache -t ${IMAGE_NAME}:${BUILD_NUMBER} -f Dockerfile -
         '''
       }
     }
@@ -63,47 +69,30 @@ pipeline {
         sh '''
           docker run --rm \
             -v /var/run/docker.sock:/var/run/docker.sock \
-            aquasec/trivy:0.50.0 image --no-progress \
-            --severity HIGH,CRITICAL --exit-code 1 ${APP_NAME}:${IMAGE_TAG}
+            aquasec/trivy:${TRIVY_VER} image \
+              --no-progress \
+              --severity HIGH,CRITICAL \
+              --exit-code 1 \
+              ${IMAGE_NAME}:${BUILD_NUMBER}
         '''
       }
     }
 
     stage('Login & Push to ECR') {
+      when { expression { return false } } // flip to true when you’re ready
       steps {
-        withCredentials([usernamePassword(credentialsId: 'aws-ecr',
-                  usernameVariable: 'AWS_ACCESS_KEY_ID',
-                  passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
-          sh '''
-            set -e
-            export AWS_DEFAULT_REGION=${AWS_REGION}
-            ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-
-            aws ecr describe-repositories --repository-names ${ECR_REPO} >/dev/null 2>&1 || \
-              aws ecr create-repository --repository-name ${ECR_REPO} \
-                --image-scanning-configuration scanOnPush=true
-
-            aws ecr get-login-password --region ${AWS_REGION} \
-              | docker login --username AWS --password-stdin ${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
-
-            REPO_URI=${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}
-            docker tag ${APP_NAME}:${IMAGE_TAG} ${REPO_URI}:${IMAGE_TAG}
-            docker tag ${APP_NAME}:${IMAGE_TAG} ${REPO_URI}:latest
-            docker push ${REPO_URI}:${IMAGE_TAG}
-            docker push ${REPO_URI}:latest
-            echo "Pushed:"
-            echo " - ${REPO_URI}:${IMAGE_TAG}"
-            echo " - ${REPO_URI}:latest"
-          '''
-        }
+        echo 'Add your ECR login + push here when ready.'
       }
     }
   }
 
   post {
-    always { sh 'docker image prune -f || true' }
+    always {
+      sh 'docker image prune -f || true'
+    }
   }
 }
+
 
 
 
